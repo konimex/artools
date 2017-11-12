@@ -9,9 +9,9 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 
-version=@version@
+version=0.6
 
-LIBDIR='@libdir@'
+LIBDIR='/usr/lib/artools'
 
 [[ -r ${LIBDIR}/util-msg.sh ]] && source ${LIBDIR}/util-msg.sh
 
@@ -19,35 +19,210 @@ import ${LIBDIR}/util.sh
 import ${LIBDIR}/util-pkg.sh
 import ${LIBDIR}/util-pkg-tree.sh
 
-load_user_info
+if [[ ! $1 ]]; then
+    printf "Usage: $0 enpbq
+            e      Use existing Artix source dirs without updating, default if nothing else is specified
+            n      Delete existing Artix source dirs and clone new ones
+            p      Update ('git pull') existing Artix source dirs, implies 'e'
+            b      Build the Arch sources tree with 'buildtree -ai' (sync/import)
+            q      Quiet, only print packages with updates
+--> 'e' and 'n' are mutually exclusive, if both are given only 'e' is used;
+--> 'n' and 'p' are mutually inclusive, if both are given 'p' is ignored;
+--> unlisted letters will be gracefully ignored.
+==> MERGETOOL environment variable is honoured, supported currently are sdiff and meld (default if unset)
+"
+    exit
+fi
 
+# TODO: Use getopts instead
+[[ $1 =~ 'e' ]] && EXISTING=1
+[[ $1 =~ 'n' ]] && NEW=1
+[[ $1 =~ 'p' ]] && PULL=1;
+[[ $1 =~ 'b' ]] && BUILDTREE=1
+[[ $1 =~ 'q' ]] && QUIET=1
+[[ $1 == 'q' ]] && EXISTING=1
+
+[[ $EXISTING && $NEW ]] && unset NEW
+[[ $NEW && $PULL ]] && unset PULL
+[[ $NEW ]] && unset EXISTING
+
+# Debug echoes
+#echo E $EXISTING
+#echo N $NEW
+#echo P $PULL
+#echo B $BUILDTREE
+#echo Q $QUIET
+
+countdown() { for (( i = $1; i > 0; i-- )); do echo -n "$i "; sleep 1; done; echo; }
+
+load_user_info
 load_config "${AT_USERCONFDIR}/artools.conf" || load_config "${SYSCONFDIR}/artools.conf"
 
-declare -A UPDATES
+declare -A PKGBUILDS PKGDIRS ARTIXDIR ARCHVER
+basedir=$(pwd)
+switch_testing="switching to testing branch"
+
+#if [[ $BUILDTREE ]]; then
+#    msg "Fetching/updating Arch sources"
+#    buildtree -ai
+#fi
+if [[ $BUILDTREE ]]; then
+    msg "Fetching/updating Arch sources"
+    buildtree -a
+    msg "Imporing updates to Artix repos"
+    for repo in ${repo_tree_artix[@]}; do
+        info "$repo"
+        buildtree -i -r $repo
+    done
+fi
+
+mkdir -p "${basedir}/artix"
+cd "${basedir}/artix"
+
+
+# TODO: Use buildtree functions instead
+
+if [[ $NEW ]]; then
+    msg "Removing artix/*"
+    rm -fr ${basedir}/artix/*
+    for repo in ${repo_tree_artix[@]}; do
+        msg "Cloning artix/$repo"
+        git clone git@github.com:artix-linux/$repo.git
+        cd $repo
+        error "$(pwd)"
+        msg2 "[$repo]: $switch_testing"
+#die "something is wrong with git checkout"
+        git checkout testing
+        branch=$(git name-rev --name-only HEAD)
+        info "You are in the $branch branch of $repo"
+        cd "${basedir}/artix"
+    done
+fi
+
+if [[ $EXISTING || $PULL ]]; then
+    for repo in ${repo_tree_artix[@]}; do
+#    for repo in system world galaxy lib32; do
+        cd "${basedir}/artix"
+        [[ -d $repo ]] || {
+            msg "Repo dir $repo not found, cloning..."
+            git clone git@github.com:artix-linux/$repo.git
+            msg2 "[$repo]: $switch_testing"
+            cd $repo
+            git checkout testing
+            continue
+        }
+        cd $repo
+        if [[ $PULL ]]; then
+            msg "Pulling from artix/$repo"
+            git pull
+        fi
+        msg2 "[$repo]: $switch_testing"
+        git checkout testing
+        cd "${basedir}/artix"
+    done
+fi
+
 msg_table_header "%-30s %-30s %-30s %-30s" "Repository" "Package" "Artix version" "Arch version"
 for repo in ${repo_tree_artix[@]}; do
     for pkg in ${tree_dir_artix}/$repo/*; do
         if [[ -f $pkg/PKGBUILD ]];then
             source $pkg/PKGBUILD 2>/dev/null
             package=${pkg##*/}
-            artixver=$(get_full_version $package)
+#            artixver=$(get_full_version $package)
+            artixver=$(get_full_version)
             set_import_path "$repo" "$package"
             if [[ -f $src/PKGBUILD ]];then
                 source $src/PKGBUILD 2>/dev/null
-                archver=$(get_full_version $package)
+#                archver=$(get_full_version $package)
+                archver=$(get_full_version)
             fi
             if [ $(vercmp $artixver $archver) -lt 0 ];then
-                UPDATES[$package]="$src/PKGBUILD $pkg/PKGBUILD"
+                PKGBUILDS[$package]="$src/PKGBUILD $pkg/PKGBUILD"
+                PKGDIRS[$package]="$src $pkg"
+                ARTIXDIR[$package]="$pkg"
+                ARCHVER[$package]="$archver"
                 msg_row_update "%-30s %-30s %-30s %-30s" "$repo" "$package" "$artixver" "$archver"
             else
-                msg_row "%-30s %-30s %-30s %-30s" "$repo" "$package" "$artixver" "$archver"
+                [[ $QUIET ]] || msg_row "%-30s %-30s %-30s %-30s" "$repo" "$package" "$artixver" "$archver"
             fi
         fi
         unset pkgver epoch pkgrel artixver archver package
     done
 done
 
-for upd in "${!UPDATES[@]}"; do
-    msg "Diff: %s" "$upd"
-    diff -u ${UPDATES[$upd]}
+for upd in "${!PKGBUILDS[@]}"; do
+    echo "=========================================="
+    echo "Processing ${GREEN}$upd" $ALL_OFF
+    currepo=$(sed "s/$upd//" <<< ${ARTIXDIR[$upd]})
+    repo=$(basename $currepo)
+    cd "${currepo}"
+    stat_busy "Determining git branch"
+    branch=$(git name-rev --name-only HEAD)
+    plain "$branch"
+    if [[ $branch != 'testing' ]]; then
+        error "$repo not in testing branch, skipping $upd"
+        echo
+        continue
+    fi
+    echo -n "Merge updated ${GREEN}$upd-${ARCHVER[$upd]}${ALL_OFF} into Artix? (y/n) "
+            message=$upd-${ARCHVER[$upd]}
+#            echo "Default commit message: \"${GREEN}${message}${ALL_OFF}\". Use it? (y/n)"
+    read ans
+    if [[ $ans == 'y' ]]; then
+        if [[ $MERGETOOL == 'sdiff' ]]; then
+            randfile=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1)
+            sdiff -o /tmp/$randfile ${PKGBUILDS[$upd]}
+            mv -fv /tmp/$randfile ${ARTIXDIR[$upd]}/PKGBUILD
+        else
+            meld ${PKGDIRS[$upd]}
+        fi
+        echo -n "Run updpkgsums? (y/n) "
+        read ans
+        if [[ $ans == 'y' ]]; then
+            cp -a ${ARTIXDIR[$upd]} /tmp/
+            [[ -d /tmp/${ARTIXDIR[$upd]} ]] && {
+				cd /tmp/${ARTIXDIR[$upd]}
+				updpkgsums && cp -f PKGBUILD ${basedir}/${ARTIXDIR[$upd]}/PKGBUILD || error "Running updpkgsums failed, you should CTRL-C and fix."
+			}
+            cd ${basedir}
+        fi
+        echo -n "Run a catch-most 'makepkg -ddo --skippgpcheck'? "
+        read ans
+        if [[ $ans == 'y' ]]; then
+            [[ -d /tmp/${ARTIXDIR[$upd]} ]] && {
+				cd /tmp/${ARTIXDIR[$upd]}
+				makepkg -ddo --skippgpcheck
+			}
+            cd "${basedir}"
+        fi
+        cd "${currepo}"
+        branch=$(git name-rev --name-only HEAD)
+        echo "---> You are in the ${RED}${branch}${ALL_OFF} branch of ${GREEN}${repo}${ALL_OFF}"
+        message=$upd-${ARCHVER[$upd]}
+        echo -n "Default commit message: \"${GREEN}${message}${ALL_OFF}\". Use it? (y/n) "
+        read ans
+        if [[ $ans != 'y' ]]; then
+            echo -n "Enter commit message: "
+            read message
+        fi
+        echo -n "Commit and push changes for ${GREEN}${upd}${ALL_OFF}? A dry run will be shown first. (y/n) "
+        read ans
+        if [[ $ans == 'y' ]]; then
+            cd "${currepo}"
+            echo ${RED}"================= Dry running git add/commit/push =================" $ALL_OFF
+            git add -v --dry-run "$upd"
+            git commit --branch --dry-run -v -m "$message"
+            git push -v --dry-run origin
+            echo ${RED}"===================================================================" $ALL_OFF
+            echo -n "Really commit and push changes for ${GREEN}${upd}${ALL_OFF}? (y/n) "
+            read ans
+            if [[ $ans == 'y' ]]; then
+                git add "$upd"
+                git commit --branch -S -m "$message"
+                echo -n "$YELLOW Countdown to commit: $ALL_OFF"
+                countdown 10
+                git push origin
+            fi
+        fi
+    fi
 done
