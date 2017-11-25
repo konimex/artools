@@ -66,6 +66,28 @@ switch_testing="switching to testing branch"
 #    msg "Fetching/updating Arch sources"
 #    buildtree -ai
 #fi
+
+# TODO: Use buildtree functions instead
+
+mkdir -p "${basedir}/artix"
+cd "${basedir}/artix"
+
+if [[ $NEW ]]; then
+    msg "Removing artix/*"
+    rm -fr ${basedir}/artix/*
+    for repo in ${repo_tree_artix[@]}; do
+        msg "Cloning artix/$repo"
+        git clone git@github.com:artix-linux/$repo.git
+        cd $repo
+        msg2 "[$repo]: $switch_testing"
+#die "something is wrong with git checkout"
+        git checkout testing
+        branch=$(git name-rev --name-only HEAD)
+        info "You are in the $branch branch of $repo"
+        cd "${basedir}/artix"
+    done
+fi
+
 if [[ $BUILDTREE ]]; then
     msg "Fetching/updating Arch sources"
     buildtree -a
@@ -76,28 +98,6 @@ if [[ $BUILDTREE ]]; then
     done
 fi
 
-mkdir -p "${basedir}/artix"
-cd "${basedir}/artix"
-
-
-# TODO: Use buildtree functions instead
-
-if [[ $NEW ]]; then
-    msg "Removing artix/*"
-    rm -fr ${basedir}/artix/*
-    for repo in ${repo_tree_artix[@]}; do
-        msg "Cloning artix/$repo"
-        git clone git@github.com:artix-linux/$repo.git
-        cd $repo
-        error "$(pwd)"
-        msg2 "[$repo]: $switch_testing"
-#die "something is wrong with git checkout"
-        git checkout testing
-        branch=$(git name-rev --name-only HEAD)
-        info "You are in the $branch branch of $repo"
-        cd "${basedir}/artix"
-    done
-fi
 
 if [[ $EXISTING || $PULL ]]; then
     for repo in ${repo_tree_artix[@]}; do
@@ -121,6 +121,11 @@ if [[ $EXISTING || $PULL ]]; then
         cd "${basedir}/artix"
     done
 fi
+
+echo
+echo "Searching for updates..."
+echo "==========================================================================================================="
+echo
 
 msg_table_header "%-30s %-30s %-30s %-30s" "Repository" "Package" "Artix version" "Arch version"
 for repo in ${repo_tree_artix[@]}; do
@@ -169,30 +174,34 @@ for upd in "${!PKGBUILDS[@]}"; do
 #            echo "Default commit message: \"${GREEN}${message}${ALL_OFF}\". Use it? (y/n)"
     read ans
     if [[ $ans == 'y' ]]; then
+		# Restore missing i686 arch
+        sed -i 's/arch=(x86_64)/arch=(i686 x86_64)/' ${ARTIXDIR[$upd]}/PKGBUILD
+        # This is for single-quoted arch
+        sed -i 's/arch=(\x27x86_64\x27)/arch=(\x27i686\x27 \x27x86_64\x27)/' ${ARTIXDIR[$upd]}/PKGBUILD
         if [[ $MERGETOOL == 'sdiff' ]]; then
             randfile=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1)
             sdiff -o /tmp/$randfile ${PKGBUILDS[$upd]}
             mv -fv /tmp/$randfile ${ARTIXDIR[$upd]}/PKGBUILD
         else
-            meld ${PKGDIRS[$upd]}
+            meld ${PKGDIRS[$upd]} 2>/dev/null
         fi
         echo -n "Run updpkgsums? (y/n) "
         read ans
         if [[ $ans == 'y' ]]; then
             cp -a ${ARTIXDIR[$upd]} /tmp/
             [[ -d /tmp/${ARTIXDIR[$upd]} ]] && {
-				cd /tmp/${ARTIXDIR[$upd]}
-				updpkgsums && cp -f PKGBUILD ${basedir}/${ARTIXDIR[$upd]}/PKGBUILD || error "Running updpkgsums failed, you should CTRL-C and fix."
-			}
+        cd /tmp/${ARTIXDIR[$upd]}
+        updpkgsums && cp -f PKGBUILD ${basedir}/${ARTIXDIR[$upd]}/PKGBUILD || error "Running updpkgsums failed, you should CTRL-C and fix."
+        }
             cd ${basedir}
         fi
-        echo -n "Run a catch-most 'makepkg -ddo --skippgpcheck'? "
+        echo -n "Run a catch-most 'makepkg -ddo --skippgpcheck'? (y/n) "
         read ans
         if [[ $ans == 'y' ]]; then
             [[ -d /tmp/${ARTIXDIR[$upd]} ]] && {
-				cd /tmp/${ARTIXDIR[$upd]}
-				makepkg -ddo --skippgpcheck
-			}
+        cd /tmp/${ARTIXDIR[$upd]}
+        makepkg -ddo --skippgpcheck
+        }
             cd "${basedir}"
         fi
         cd "${currepo}"
