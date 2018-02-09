@@ -140,10 +140,10 @@ add_svc_rc(){
 }
 
 add_svc_runit(){
-    local mnt="$1" name="$2" rlvl="$3"
+    local mnt="$1" name="$2"
     if [[ -f $mnt/etc/sv/$name ]]; then
         msg2 "Setting %s ..." "name"
-        ln -s /etc/sv/$name $mnt/etc/runit/runsvdir/$rlvl &>/dev/null
+        chroot $mnt ln -s /etc/sv/$name /etc/runit/runsvdir/default &>/dev/null
     fi
 }
 
@@ -183,10 +183,10 @@ configure_services(){
         ;;
         'runit')
             for svc in ${services[@]}; do
-                add_svc_runit "$mnt" "$svc" "default"
+                add_svc_runit "$mnt" "$svc"
             done
             for svc in ${services_live[@]}; do
-                add_svc_runit "$mnt" "$svc" "default"
+                add_svc_runit "$mnt" "$svc"
             done
         ;;
     esac
