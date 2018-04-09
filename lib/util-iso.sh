@@ -182,6 +182,7 @@ configure_services(){
             done
         ;;
         'runit')
+            mkdir -p "$mnt/etc/runit/runsvdir/default"
             for svc in ${services[@]}; do
                 add_svc_runit "$mnt" "$svc"
             done
